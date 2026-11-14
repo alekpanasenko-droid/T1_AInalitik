@@ -100,11 +100,18 @@ def profile():
         columns = [dict(name=r[1], type=r[2]) for r in con.execute('PRAGMA table_info(positions)')]
         missing = {f: con.execute(f'SELECT COUNT(*) FROM positions WHERE "{f}" IS NULL OR CAST("{f}" AS TEXT) = ""').fetchone()[0] for f in FIELDS}
         duplicate_rows = con.execute('SELECT COUNT(*) - COUNT(DISTINCT as_of_date||"|"||side||"|"||product||"|"||currency||"|"||maturity_bucket) FROM positions').fetchone()[0]
+        type_errors = con.execute('''SELECT COUNT(*) FROM positions WHERE
+            date(as_of_date) IS NULL OR snapshot_kind NOT IN ('MONTH_END','DAILY')
+            OR side NOT IN ('ASSET','LIABILITY') OR currency NOT IN ('RUB','USD','EUR')
+            OR typeof(balance_ccy) NOT IN ('integer','real')
+            OR typeof(fx_rub_per_unit) NOT IN ('integer','real')
+            OR typeof(balance_rub) NOT IN ('integer','real')
+            OR typeof(rate_annual) NOT IN ('integer','real')''').fetchone()[0]
         damaged = con.execute("SELECT COUNT(*) FROM positions WHERE product LIKE '%�%' OR maturity_bucket LIKE '%�%'").fetchone()[0]
         sample = [dict(r) for r in con.execute('SELECT * FROM positions LIMIT 5')]
         dates = con.execute('SELECT MIN(as_of_date), MAX(as_of_date), COUNT(DISTINCT as_of_date) FROM positions').fetchone()
         return dict(source='data/bank_portfolio.xlsx → .runtime/portfolio.sqlite3', table='positions', records=count,
-                    columns=columns, missing=missing, duplicate_keys=duplicate_rows,
+                    columns=columns, missing=missing, duplicate_keys=duplicate_rows, type_errors=type_errors,
                     damaged_labels=damaged, date_range=[dates[0], dates[1]], distinct_dates=dates[2], sample=sample)
     finally:
         con.close()

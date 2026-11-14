@@ -58,6 +58,8 @@ class DataEngineer:
             issues.append('Источник пуст')
         if data['duplicate_keys']:
             issues.append(f"Повторных ключей: {data['duplicate_keys']}")
+        if data['type_errors']:
+            issues.append(f"Ошибок типов и кодов: {data['type_errors']}")
         if any(data['missing'].values()):
             issues.append('Есть пропуски')
         if data['damaged_labels']:
@@ -187,8 +189,8 @@ class Orchestrator:
                 return self._finish(brief['status'], brief.get('message', 'Уточните запрос.'), trace, started, conversation_id, tokens)
             source = DataEngineer().run()
             step(DataEngineer.name, 'Проверка источника', source)
-            if source['records'] == 0:
-                return self._finish('error', 'Источник данных пуст.', trace, started, conversation_id, tokens)
+            if source['records'] == 0 or any('Ошибок типов' in x for x in source['issues']):
+                return self._finish('error', 'Источник пуст или содержит критичные ошибки типов. Проверьте профиль данных.', trace, started, conversation_id, tokens)
             feedback = ''
             for attempt in range(2):
                 proposal, n = DataAnalyst().run(question, brief['brief'], history, feedback)

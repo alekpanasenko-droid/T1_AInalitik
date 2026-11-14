@@ -15,6 +15,7 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(data['records'], 756)
         self.assertEqual(len(data['columns']), 10)
         self.assertEqual(data['duplicate_keys'], 0)
+        self.assertEqual(data['type_errors'], 0)
 
     def test_reference_total(self):
         result = execute_readonly("SELECT ROUND(SUM(balance_rub), 2) AS total FROM positions WHERE as_of_date='2026-10-31' AND side='ASSET' AND snapshot_kind='MONTH_END'")
