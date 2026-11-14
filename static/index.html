@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Т1 Дата-агент — аналитика в диалоге</title>
+  <meta name="description" content="Учебный дата-агент Т1: проверяемые расчёты, визуализация и отчёты по банковским данным.">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand"><span class="brand-mark">+<i></i></span><span class="brand-name">Т1 <small>ДАТА-АГЕНТ</small></span></div>
+      <button class="new-chat" id="new-chat"><span>＋</span> Новый диалог</button>
+      <div class="nav-label">РАБОЧЕЕ ПРОСТРАНСТВО</div>
+      <nav class="nav">
+        <button class="nav-item active" data-view="chat"><span class="nav-icon">▤</span> Диалог</button>
+        <button class="nav-item" data-view="source"><span class="nav-icon">▦</span> Источник данных</button>
+        <button class="nav-item" data-view="dictionary"><span class="nav-icon">◇</span> Карточка данных</button>
+        <button class="nav-item" data-view="reports"><span class="nav-icon">▣</span> Отчёты</button>
+      </nav>
+      <div class="nav-label history-label">ИСТОРИЯ</div>
+      <div id="conversations" class="conversation-list"></div>
+      <div class="sidebar-bottom"><span class="status-dot"></span><span id="llm-status">Проверка модели…</span></div>
+    </aside>
+    <main class="main">
+      <header class="topbar"><button id="menu-toggle" class="menu-toggle" aria-label="Открыть меню">☰</button><div class="breadcrumb"><span>Т1 Дата-агент</span><span class="slash">/</span><strong id="view-label">Диалог</strong></div><div class="topbar-right"><span class="demo-tag">УЧЕБНЫЙ КОНТУР</span><span class="avatar">Т1</span></div></header>
+      <section id="view-chat" class="view chat-view active">
+        <div id="messages" class="messages"><div class="welcome"><div class="welcome-logo"><span>+</span>Т1</div><div class="eyebrow">АНАЛИТИКА В ДИАЛОГЕ</div><h1>Что покажут ваши данные?</h1><p>Спросите о динамике, структуре или сравнении банковского портфеля. Агент уточнит задачу, выполнит расчёт и покажет путь к результату.</p><div class="suggestions"><button data-prompt="Покажи помесячную динамику активов в рублях за 2026 год">↗ <span>Динамика активов</span></button><button data-prompt="Покажи структуру пассивов по продуктам на 31 октября 2026 года">◫ <span>Структура пассивов</span></button><button data-prompt="Сравни активы на 30 ноября 2025 и 31 октября 2026 года">⇄ <span>Сравнение периодов</span></button></div></div></div>
+        <form id="composer" class="composer"><textarea id="prompt" rows="1" placeholder="Спросите о данных или задайте уточнение…" maxlength="4000" aria-label="Ваш вопрос"></textarea><div class="composer-bottom"><span>Расчёты выполняются SQL по синтетическим данным</span><button type="submit" id="send" aria-label="Отправить">↑</button></div></form>
+      </section>
+      <section id="view-source" class="view page-view"><div class="page-heading"><div><div class="eyebrow">ИСТОЧНИК ДАННЫХ</div><h1>Портфель под контролем</h1><p>Структура, типы и качество учебного набора данных.</p></div><span class="pill">XLSX → SQLite</span></div><div id="source-content"></div></section>
+      <section id="view-dictionary" class="view page-view"><div class="page-heading"><div><div class="eyebrow">СЕМАНТИКА ДАННЫХ</div><h1>Карточка данных</h1><p>Описание полей, единицы измерения и формулы доступны для уточнения.</p></div></div><div id="dictionary-content"></div></section>
+      <section id="view-reports" class="view page-view"><div class="page-heading"><div><div class="eyebrow">БИБЛИОТЕКА</div><h1>Сохранённые отчёты</h1><p>Результаты анализа, доступные для повторного просмотра и выгрузки.</p></div></div><div id="reports-content"></div></section>
+    </main>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
