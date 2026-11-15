@@ -91,6 +91,17 @@ def create_conversation():
     return {'id': ident, 'title': 'Новый диалог', 'created_at': now}
 
 
+@app.delete('/api/conversations/{ident}')
+def delete_conversation(ident: str):
+    with state_connection() as con:
+        if not con.execute('SELECT 1 FROM conversations WHERE id=?', (ident,)).fetchone():
+            raise HTTPException(404, 'Conversation not found')
+        con.execute('DELETE FROM events WHERE conversation_id=?', (ident,))
+        con.execute('DELETE FROM messages WHERE conversation_id=?', (ident,))
+        con.execute('DELETE FROM conversations WHERE id=?', (ident,))
+    return {'deleted': True, 'id': ident, 'saved_reports_preserved': True}
+
+
 @app.get('/api/conversations/{ident}/messages')
 def messages(ident: str):
     with state_connection() as con:
