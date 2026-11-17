@@ -1,8 +1,8 @@
 import unittest
 import uuid
 
-from fastapi.testclient import TestClient
-from app import app
+from fastapi import HTTPException
+from app import create_conversation, delete_conversation, messages
 
 from agent.store import initialize, profile, state_connection
 from agent.sql_tool import execute_readonly, SQLRejected
@@ -40,8 +40,8 @@ class CoreTests(unittest.TestCase):
         self.assertAlmostEqual(result['rows'][0]['volume_effect_rub'], 43996.98, places=2)
 
     def test_delete_conversation_keeps_saved_report(self):
-        with TestClient(app) as client:
-            ident = client.post('/api/conversations').json()['id']
+        ident = create_conversation()['id']
+        try:
             report_id = str(uuid.uuid4())
             with state_connection() as con:
                 con.execute('INSERT INTO messages(conversation_id,role,content,created_at) VALUES(?,?,?,?)',
@@ -50,17 +50,16 @@ class CoreTests(unittest.TestCase):
                             (ident, 'test', '{}', '2026-01-01'))
                 con.execute('INSERT INTO reports VALUES(?,?,?,?,?)',
                             (report_id, 'Saved test report', ident, '{}', '2026-01-01'))
-            try:
-                response = client.delete(f'/api/conversations/{ident}')
-                self.assertEqual(response.status_code, 200)
-                self.assertTrue(response.json()['saved_reports_preserved'])
-                self.assertEqual(client.get(f'/api/conversations/{ident}/messages').status_code, 404)
-                with state_connection() as con:
-                    self.assertEqual(con.execute('SELECT COUNT(*) FROM events WHERE conversation_id=?', (ident,)).fetchone()[0], 0)
-                    self.assertEqual(con.execute('SELECT COUNT(*) FROM reports WHERE id=?', (report_id,)).fetchone()[0], 1)
-            finally:
-                with state_connection() as con:
-                    con.execute('DELETE FROM reports WHERE id=?', (report_id,))
+            response = delete_conversation(ident)
+            self.assertTrue(response['saved_reports_preserved'])
+            with self.assertRaises(HTTPException):
+                messages(ident)
+            with state_connection() as con:
+                self.assertEqual(con.execute('SELECT COUNT(*) FROM events WHERE conversation_id=?', (ident,)).fetchone()[0], 0)
+                self.assertEqual(con.execute('SELECT COUNT(*) FROM reports WHERE id=?', (report_id,)).fetchone()[0], 1)
+        finally:
+            with state_connection() as con:
+                con.execute('DELETE FROM reports WHERE conversation_id=?', (ident,))
 
 
 if __name__ == '__main__':

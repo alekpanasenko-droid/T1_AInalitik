@@ -47,7 +47,16 @@ def initialize():
             payload TEXT NOT NULL, created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY AUTOINCREMENT, conversation_id TEXT,
             event TEXT NOT NULL, detail TEXT NOT NULL, duration_ms REAL, llm_tokens INTEGER, created_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS sources(id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL,
+            location TEXT NOT NULL, table_name TEXT NOT NULL, created_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS dashboards(id TEXT PRIMARY KEY, name TEXT NOT NULL, source_id TEXT NOT NULL,
+            config TEXT NOT NULL, created_at TEXT NOT NULL);
         ''')
+        con.execute('INSERT OR IGNORE INTO sources VALUES(?,?,?,?,?,?)',
+                    ('portfolio', 'Учебный банковский портфель', 'sqlite', str(DATA_DB), 'positions', datetime.now().isoformat()))
+        columns = [row[1] for row in con.execute('PRAGMA table_info(conversations)')]
+        if 'source_id' not in columns:
+            con.execute("ALTER TABLE conversations ADD COLUMN source_id TEXT NOT NULL DEFAULT 'portfolio'")
         for field, (description, unit, formula) in DESCRIPTIONS.items():
             con.execute('INSERT OR IGNORE INTO dictionary VALUES(?,?,?,?)', (field, description, unit, formula))
     if not DATA_DB.exists() or DATA_DB.stat().st_mtime < SOURCE.stat().st_mtime:

@@ -6,6 +6,7 @@ import time
 from .llm import complete_json, LLMError
 from .sql_tool import execute_readonly, SQLRejected
 from .store import dictionary, event, profile
+from .sources import inspect
 
 SCHEMA = '''Table positions: as_of_date TEXT YYYY-MM-DD, snapshot_kind TEXT (MONTH_END/DAILY),
 side TEXT (ASSET/LIABILITY), product TEXT, currency TEXT (RUB/USD/EUR),
@@ -19,13 +20,23 @@ Product and maturity labels are in Russian; use exact values from data when filt
 ROLES = ['Оркестратор', 'Бизнес-аналитик', 'Инженер данных', 'Аналитик данных', 'BI-разработчик', 'Тестировщик']
 
 
+def source_schema(source_id):
+    if source_id == 'portfolio':
+        return SCHEMA
+    data = inspect(source_id)
+    return ('Источник: ' + data['name'] + '. Таблица ' + data['table'] + '. Поля и типы: '
+            + ', '.join(c['name'] + ' ' + c['type'] for c in data['columns'])
+            + '. Пример строк: ' + json.dumps(data['sample'][:3], ensure_ascii=False, default=str)
+            + '. Используй только эту таблицу. Не предполагай, что это банковские данные.')
+
+
 class BusinessAnalyst:
     name = 'Бизнес-аналитик'
 
-    def run(self, question, history):
+    def run(self, question, history, source_id='portfolio'):
         if re.search(r'\b(удали|удалить|измени|изменить|перезапиши|обойди|powershell|drop|delete|update)\b', question, re.I):
             return {'status': 'refuse', 'message': 'Изменять исходные данные или обходить разрешённый SQL-инструмент нельзя. Могу выполнить запрос только на чтение.'}, 0
-        if (re.search(r'курс', question, re.I) and re.search(r'фиксированн', question, re.I)
+        if (source_id == 'portfolio' and re.search(r'курс', question, re.I) and re.search(r'фиксированн', question, re.I)
                 and re.search(r'\b(USD|EUR)\b', question, re.I) and len(re.findall(r'\b\d{1,2}\b', question)) >= 2
                 and re.search(r'актив|пассив', question, re.I)):
             return {'status': 'ready', 'brief': question, 'title': 'Курсовой эффект при фиксированном остатке', 'unit': '₽'}, 0
@@ -38,8 +49,10 @@ class BusinessAnalyst:
 Если пользователь указал сравниваемые даты, валюту, сторону баланса и сценарий «при фиксированном остатке»,
 данных достаточно для расчёта курсового эффекта: остаток в валюте на первой дате × изменение курса.
 Иначе status="ready", brief — точная формулировка метрики, дат, фильтров и группировки, title — краткое название, unit — единица. Ответ JSON.'''
+        if source_id != 'portfolio':
+            system = '''Ты бизнес-аналитик дата-агента. По схеме источника определи метрику, период, фильтры и разрез. Если они неоднозначны, верни JSON {"status":"clarify","message":"один конкретный вопрос"}. Если данных для метрики нет, верни status="refuse" и объяснение. Иначе верни {"status":"ready","brief":"точная постановка","title":"краткое название","unit":"единица, если известна"}. Не выдумывай поля и числа.'''
         context = '\n'.join(f'{m["role"]}: {m["content"]}' for m in history[-8:])
-        result, usage = complete_json(system + '\n' + SCHEMA, f'История:\n{context}\nТекущий вопрос: {question}')
+        result, usage = complete_json(system + '\n' + source_schema(source_id), f'История:\n{context}\nТекущий вопрос: {question}')
         status = result.get('status')
         if status not in {'ready', 'clarify', 'refuse'}:
             raise LLMError('Бизнес-аналитик вернул неизвестный статус.')
@@ -51,7 +64,11 @@ class BusinessAnalyst:
 class DataEngineer:
     name = 'Инженер данных'
 
-    def run(self):
+    def run(self, source_id='portfolio'):
+        if source_id != 'portfolio':
+            data = inspect(source_id)
+            issues = ['Есть пропуски'] if any(data['missing'].values()) else []
+            return {'source': data['name'] + ' / ' + data['table'], 'records': data['records'], 'issues': issues}
         data = profile()
         issues = []
         if data['records'] == 0:
@@ -70,8 +87,8 @@ class DataEngineer:
 class DataAnalyst:
     name = 'Аналитик данных'
 
-    def run(self, question, brief, history, feedback=''):
-        if re.search(r'курс', question, re.I) and re.search(r'фиксированн', question, re.I):
+    def run(self, question, brief, history, feedback='', source_id='portfolio'):
+        if source_id == 'portfolio' and re.search(r'курс', question, re.I) and re.search(r'фиксированн', question, re.I):
             month_names = {'январ': 1, 'феврал': 2, 'март': 3, 'апрел': 4, 'мая': 5, 'май': 5,
                            'июн': 6, 'июл': 7, 'август': 8, 'сентябр': 9, 'октябр': 10,
                            'ноябр': 11, 'декабр': 12}
@@ -104,7 +121,9 @@ class DataAnalyst:
 Все числа вычисляются SQL, не тобой. Для месячных рядов исключай DAILY. Не используй sqlite_master, PRAGMA, подзапросы к другим таблицам, модификации, несколько инструкций. Результат — агрегированная таблица, не более 500 строк. Если в вопросе нужен курс, учитывай side/currency/date и не превращай изменение курса в доказанную причину без сценарного расчёта. Если запрос неразрешим, верни {"error":"причина"}.'''
         system += '''\nДля долей используй: WITH agg AS (SELECT product, SUM(balance_rub) AS amount_rub FROM positions WHERE ... GROUP BY product) SELECT product, amount_rub, ROUND(100.0*amount_rub/SUM(amount_rub) OVER (),2) AS share_pct FROM agg. Сохраняй фильтр side и дату в CTE. Не добавляй ставку, если её не просили.
 Курсовой эффект при фиксированном остатке: SUM(balance_ccy) на первой дате × (курс второй даты − курс первой даты), в рублях. Обе даты должны иметь одинаковые фильтры side и currency.'''
-        result, usage = complete_json(system + '\n' + SCHEMA + '\nКарточка: ' + json.dumps(card, ensure_ascii=False),
+        if source_id != 'portfolio':
+            system = '''Ты аналитик данных. Верни JSON {"sql":"один SELECT или WITH","formula":"формула","filters":"фильтры","period":"период","unit":"единица"}. Используй только таблицу и поля указанного источника. SQL только для чтения, максимум 500 строк. Для CSV/XLSX числовые столбцы имеют тип TEXT: в SQLite применяй CAST(поле AS REAL) для SUM/AVG. Для PostgreSQL применяй его синтаксис. Все числа вычисляются запросом. Если задача неразрешима, верни {"error":"причина"}.'''
+        result, usage = complete_json(system + '\n' + source_schema(source_id) + ('\nКарточка: ' + json.dumps(card, ensure_ascii=False) if source_id == 'portfolio' else ''),
                                       'Исходный запрос: ' + question + '\nПостановка: ' + brief + '\nПредыдущие реплики: ' + json.dumps(history[-4:], ensure_ascii=False)
                                       + ('\nИсправь предыдущую ошибку: ' + feedback if feedback else ''))
         if result.get('error'):
@@ -137,21 +156,21 @@ class BIDeveloper:
 class Tester:
     name = 'Тестировщик'
 
-    def run(self, question, brief, proposal, result, chart):
+    def run(self, question, brief, proposal, result, chart, source_id='portfolio'):
         if not result['columns']:
             return {'passed': False, 'message': 'Пустая структура результата'}, 0
         if not result['rows']:
             return {'passed': False, 'message': 'Нет строк для заданных условий. Уточните период или фильтры.'}, 0
         if chart and (chart['x'] not in result['columns'] or chart['y'] not in result['columns']):
             return {'passed': False, 'message': 'Поля графика не совпадают с результатом'}, 0
-        if re.search(r'пассив', question, re.I) and not re.search(r'side\s*=\s*[\'\"]LIABILITY[\'\"]', proposal['sql'], re.I):
+        if source_id == 'portfolio' and re.search(r'пассив', question, re.I) and not re.search(r'side\s*=\s*[\'\"]LIABILITY[\'\"]', proposal['sql'], re.I):
             return {'passed': False, 'message': 'Для пассивов отсутствует фильтр side=LIABILITY.'}, 0
-        if re.search(r'актив', question, re.I) and not re.search(r'side\s*=\s*[\'\"]ASSET[\'\"]', proposal['sql'], re.I):
+        if source_id == 'portfolio' and re.search(r'актив', question, re.I) and not re.search(r'side\s*=\s*[\'\"]ASSET[\'\"]', proposal['sql'], re.I):
             return {'passed': False, 'message': 'Для активов отсутствует фильтр side=ASSET.'}, 0
         if re.search(r'дол[яюи]|share|percent|процент', question, re.I) and not any(
                 re.search(r'share|percent|pct|дол[яюи]|процент', c, re.I) for c in result['columns']):
             return {'passed': False, 'message': 'Запрошена доля, но в таблице нет доли по категориям.'}, 0
-        if (re.search(r'(общ[а-я]*\s+сумм[а-я]*|динамик[а-я]*)\s+(актив[а-я]*|пассив[а-я]*)\s+в\s+рублях', question, re.I)
+        if (source_id == 'portfolio' and re.search(r'(общ[а-я]*\s+сумм[а-я]*|динамик[а-я]*)\s+(актив[а-я]*|пассив[а-я]*)\s+в\s+рублях', question, re.I)
                 and not re.search(r'только\s+(рубл|RUB)|рубл[а-я]*\s+позици', question, re.I)
                 and re.search(r'currency\s*=\s*[\'\"]RUB[\'\"]', proposal['sql'], re.I)):
             return {'passed': False, 'message': 'SQL исключил валютные позиции, хотя запрошен общий рублёвый эквивалент.'}, 0
@@ -159,7 +178,9 @@ class Tester:
 периодом, агрегацией и группировкой. Особое правило: «в рублях» означает рублёвый эквивалент ВСЕХ валют,
 а не фильтр currency='RUB', если нет слов «только рублёвые позиции». Для месячной динамики нужен MONTH_END.
 Не придумывай чисел. Ответ JSON: {"passed": true/false, "message": "краткое объяснение"}.'''
-        verdict, usage = complete_json(system + '\n' + SCHEMA,
+        if source_id != 'portfolio':
+            system = '''Ты тестировщик аналитического SQL. Сравни вопрос пользователя с SQL, фильтрами, периодом и группировкой. Используй только поля из схемы. Ответ JSON: {"passed":true/false,"message":"краткое объяснение"}. Не выдумывай чисел.'''
+        verdict, usage = complete_json(system + '\n' + source_schema(source_id),
                                        'Исходный запрос: ' + question + '\nПостановка: ' + brief + '\nSQL: ' + proposal['sql'] +
                                        '\nКолонки результата: ' + ', '.join(result['columns']))
         passed = verdict.get('passed') is True
@@ -170,7 +191,7 @@ class Orchestrator:
     name = 'Оркестратор'
     max_steps = 12
 
-    def run(self, question, history, conversation_id):
+    def run(self, question, history, conversation_id, source_id='portfolio'):
         started = time.monotonic()
         trace = []
         tokens = 0
@@ -182,22 +203,22 @@ class Orchestrator:
 
         try:
             step(self.name, 'План', 'Уточнить задачу → проверить источник → построить SQL → выполнить → визуализировать → проверить')
-            brief, n = BusinessAnalyst().run(question, history)
+            brief, n = BusinessAnalyst().run(question, history, source_id)
             tokens += n
             step(BusinessAnalyst.name, 'Уточнение требований', brief)
             if brief['status'] != 'ready':
                 return self._finish(brief['status'], brief.get('message', 'Уточните запрос.'), trace, started, conversation_id, tokens)
-            source = DataEngineer().run()
+            source = DataEngineer().run(source_id)
             step(DataEngineer.name, 'Проверка источника', source)
             if source['records'] == 0 or any('Ошибок типов' in x for x in source['issues']):
                 return self._finish('error', 'Источник пуст или содержит критичные ошибки типов. Проверьте профиль данных.', trace, started, conversation_id, tokens)
             feedback = ''
             for attempt in range(2):
-                proposal, n = DataAnalyst().run(question, brief['brief'], history, feedback)
+                proposal, n = DataAnalyst().run(question, brief['brief'], history, feedback, source_id)
                 tokens += n
                 step(DataAnalyst.name, 'План расчёта', proposal)
                 try:
-                    result = execute_readonly(proposal['sql'])
+                    result = execute_readonly(proposal['sql'], source_id=source_id)
                 except SQLRejected as exc:
                     feedback = str(exc)
                     step(DataAnalyst.name, 'Ошибка инструмента', feedback)
@@ -207,7 +228,7 @@ class Orchestrator:
                 step(DataAnalyst.name, 'SQL-инструмент', {'rows': len(result['rows']), 'duration_ms': result['duration_ms']})
                 chart = BIDeveloper().run(brief.get('title', 'Результат анализа'), brief.get('unit', proposal.get('unit', '')), result)
                 step(BIDeveloper.name, 'Визуализация', chart or 'Таблица без графика')
-                check, n = Tester().run(question, brief['brief'], proposal, result, chart)
+                check, n = Tester().run(question, brief['brief'], proposal, result, chart, source_id)
                 tokens += n
                 step(Tester.name, 'Контроль результата', check)
                 if check['passed']:
@@ -221,7 +242,7 @@ class Orchestrator:
                 if numeric:
                     summary += ' ' + '; '.join(f'{key}: {value:,.2f}'.replace(',', ' ') for key, value in numeric[:5]) + '.'
             payload = self._finish('ok', summary, trace, started, conversation_id, tokens)
-            payload.update(title=brief.get('title', 'Результат анализа'), unit=brief.get('unit') or proposal.get('unit', ''),
+            payload.update(title=brief.get('title', 'Результат анализа'), source_id=source_id, unit=brief.get('unit') or proposal.get('unit', ''),
                            period=proposal.get('period', ''), filters=proposal.get('filters', ''), formula=proposal.get('formula', ''),
                            sql=proposal['sql'], columns=result['columns'], rows=result['rows'], chart=chart, source=source)
             return payload

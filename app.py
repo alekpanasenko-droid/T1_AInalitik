@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 from openpyxl import Workbook
@@ -18,6 +18,8 @@ from reportlab.pdfgen.canvas import Canvas
 from agent.agents import Orchestrator
 from agent.llm import configuration
 from agent.store import ROOT, dictionary, initialize, profile, state_connection
+from agent.sources import (SourceError, registered, inspect, tables, set_table,
+                           add_upload, add_postgres, dashboard_query, filter_values, MAX_UPLOAD)
 
 app = FastAPI(title='Т1 Дата-агент', version='0.1.0')
 
@@ -37,6 +39,122 @@ class CardIn(BaseModel):
     formula: str = Field(max_length=1000)
 
 
+class PostgresIn(BaseModel):
+    name: str = Field(default='PostgreSQL', max_length=100)
+    dsn: str = Field(min_length=15, max_length=2000)
+
+
+class TableIn(BaseModel):
+    table: str
+
+
+class DashboardIn(BaseModel):
+    source_id: str
+    metric: str
+    aggregation: str = 'sum'
+    dimension: str | None = None
+    filters: dict[str, str | int | float | None] = Field(default_factory=dict)
+    date_field: str | None = None
+    date_from: str | None = None
+    date_to: str | None = None
+    limit: int = Field(default=30, ge=1, le=50)
+
+
+class SavedDashboardIn(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    config: DashboardIn
+    chart_type: str = Field(default='bar', pattern='^(bar|line|donut)$')
+
+
+@app.get('/api/sources')
+def sources():
+    return registered()
+
+
+@app.get('/api/sources/{source_id}')
+def source_detail(source_id: str):
+    try:
+        return inspect(source_id)
+    except SourceError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.put('/api/sources/{source_id}/table')
+def choose_table(source_id: str, item: TableIn):
+    try:
+        return {k: v for k, v in set_table(source_id, item.table).items() if k != 'location'}
+    except SourceError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post('/api/sources/upload')
+async def upload_source(request: Request, filename: str, name: str = ''):
+    if int(request.headers.get('content-length', '0') or 0) > MAX_UPLOAD:
+        raise HTTPException(413, 'Файл превышает 30 МБ.')
+    chunks = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > MAX_UPLOAD:
+            raise HTTPException(413, 'Файл превышает 30 МБ.')
+        chunks.append(chunk)
+    try:
+        source = add_upload(name, filename, b''.join(chunks))
+        return {k: v for k, v in source.items() if k != 'location'}
+    except (SourceError, ValueError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post('/api/sources/postgresql')
+def connect_postgresql(item: PostgresIn):
+    try:
+        source = add_postgres(item.name, item.dsn)
+        return {k: v for k, v in source.items() if k != 'location'}
+    except SourceError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post('/api/dashboard/query')
+def dashboard(item: DashboardIn):
+    try:
+        return dashboard_query(**item.model_dump())
+    except (SourceError, ValueError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.get('/api/dashboard/values')
+def dashboard_values(source_id: str, field: str):
+    try:
+        return filter_values(source_id, field)
+    except SourceError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.get('/api/dashboards')
+def list_dashboards():
+    with state_connection() as con:
+        return [dict(row) for row in con.execute('SELECT id,name,source_id,created_at FROM dashboards ORDER BY created_at DESC')]
+
+
+@app.post('/api/dashboards')
+def save_dashboard(item: SavedDashboardIn):
+    dashboard(item.config)
+    ident = str(uuid.uuid4())
+    with state_connection() as con:
+        con.execute('INSERT INTO dashboards VALUES(?,?,?,?,?)',
+                    (ident, item.name, item.config.source_id, item.model_dump_json(), datetime.now().isoformat()))
+    return {'id': ident, 'name': item.name}
+
+
+@app.get('/api/dashboards/{ident}')
+def saved_dashboard(ident: str):
+    with state_connection() as con:
+        row = con.execute('SELECT config FROM dashboards WHERE id=?', (ident,)).fetchone()
+    if not row:
+        raise HTTPException(404, 'Дашборд не найден.')
+    return json.loads(row['config'])
+
+
 @app.get('/')
 def home():
     return FileResponse(ROOT / 'static' / 'index.html')
@@ -44,7 +162,7 @@ def home():
 
 @app.get('/static/{name}')
 def static(name: str):
-    if name not in {'app.css', 'app.js'}:
+    if name not in {'app.css', 'app.js', 'data.js', 'data.css'}:
         raise HTTPException(404)
     return FileResponse(ROOT / 'static' / name)
 
@@ -83,18 +201,23 @@ def conversations():
 
 
 @app.post('/api/conversations')
-def create_conversation():
+def create_conversation(source_id: str = 'portfolio'):
+    try:
+        inspect(source_id)
+    except SourceError as exc:
+        raise HTTPException(400, str(exc)) from exc
     ident = str(uuid.uuid4())
     now = datetime.now().isoformat()
     with state_connection() as con:
-        con.execute('INSERT INTO conversations VALUES(?,?,?)', (ident, 'Новый диалог', now))
-    return {'id': ident, 'title': 'Новый диалог', 'created_at': now}
+        con.execute('INSERT INTO conversations(id,title,created_at,source_id) VALUES(?,?,?,?)', (ident, 'Новый диалог', now, source_id))
+    return {'id': ident, 'title': 'Новый диалог', 'created_at': now, 'source_id': source_id}
 
 
 @app.delete('/api/conversations/{ident}')
 def delete_conversation(ident: str):
     with state_connection() as con:
-        if not con.execute('SELECT 1 FROM conversations WHERE id=?', (ident,)).fetchone():
+        conversation = con.execute('SELECT source_id FROM conversations WHERE id=?', (ident,)).fetchone()
+        if not conversation:
             raise HTTPException(404, 'Conversation not found')
         con.execute('DELETE FROM events WHERE conversation_id=?', (ident,))
         con.execute('DELETE FROM messages WHERE conversation_id=?', (ident,))
@@ -115,14 +238,15 @@ def messages(ident: str):
 def post_message(ident: str, item: MessageIn):
     now = datetime.now().isoformat()
     with state_connection() as con:
-        if not con.execute('SELECT 1 FROM conversations WHERE id=?', (ident,)).fetchone():
+        conversation = con.execute('SELECT source_id FROM conversations WHERE id=?', (ident,)).fetchone()
+        if not conversation:
             raise HTTPException(404, 'Conversation not found')
         history = [dict(r) for r in con.execute('SELECT role,content FROM messages WHERE conversation_id=? ORDER BY id DESC LIMIT 8', (ident,))][::-1]
         con.execute('INSERT INTO messages(conversation_id,role,content,created_at) VALUES(?,?,?,?)',
                     (ident, 'user', item.content, now))
         if not history:
             con.execute('UPDATE conversations SET title=? WHERE id=?', (item.content[:56], ident))
-    payload = Orchestrator().run(item.content, history, ident)
+    payload = Orchestrator().run(item.content, history, ident, conversation['source_id'])
     with state_connection() as con:
         con.execute('INSERT INTO messages(conversation_id,role,content,payload,created_at) VALUES(?,?,?,?,?)',
                     (ident, 'assistant', payload['message'], json.dumps(payload, ensure_ascii=False), datetime.now().isoformat()))
