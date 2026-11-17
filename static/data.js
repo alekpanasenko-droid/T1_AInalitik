@@ -58,11 +58,11 @@ async function loadDashboard(){
     root.innerHTML=`<div class="section-card"><div class="section-title">Настройки анализа</div><div class="section-body"><div class="dashboard-controls"><label>ИСТОЧНИК<select class="control" id="dash-source">${sourceOptions()}</select></label><label>ПОКАЗАТЕЛЬ<select class="control" id="dash-metric"></select></label><label>ОПЕРАЦИЯ<select class="control" id="dash-aggregation">${option('sum','Сумма')}${option('avg','Среднее')}${option('count','Количество')}${option('min','Минимум')}${option('max','Максимум')}</select></label><label>РАЗРЕЗ<select class="control" id="dash-dimension"></select></label><label>ГРАФИК<select class="control" id="dash-chart">${option('bar','Столбцы')}${option('line','Линия')}${option('donut','Кольцо')}</select></label></div><div class="filter-head"><b>Фильтры</b><button class="secondary-btn" id="add-filter">＋ Добавить фильтр</button></div><div id="dash-filters"></div><div class="dashboard-actions"><button class="primary-btn" id="run-dashboard">Построить дашборд</button><button class="secondary-btn" id="save-dashboard">Сохранить</button></div><div id="dash-feedback"></div></div></div><div id="dashboard-result"></div><div class="section-card"><div class="section-title">Сохранённые дашборды</div><div class="section-body" id="saved-dashboards"></div></div>`;
     root.querySelector('.filter-head').insertAdjacentHTML('beforebegin','<div class="period-controls"><label>ПОЛЕ ДАТЫ<select class="control" id="dash-date-field"></select></label><label>С ДАТЫ<input class="control" type="date" id="dash-date-from"></label><label>ПО ДАТУ<input class="control" type="date" id="dash-date-to"></label></div>');
     $('#dash-source').value=dataState.sourceId;
-    $('#dash-source').onchange=async e=>{dataState.sourceId=e.target.value;localStorage.setItem('t1_source',e.target.value);$('#dash-filters').innerHTML='';await fillDashboardFields()};
+    $('#dash-source').onchange=async e=>{dataState.sourceId=e.target.value;localStorage.setItem('t1_source',e.target.value);$('#dash-filters').innerHTML='';await fillDashboardFields();await applyPortfolioDefault()};
     $('#add-filter').onclick=addDashboardFilter;
     $('#run-dashboard').onclick=runDashboard;
     $('#save-dashboard').onclick=saveCurrentDashboard;
-    await fillDashboardFields();await refreshSavedDashboards();
+    await fillDashboardFields();await applyPortfolioDefault();await refreshSavedDashboards();
   }catch(e){root.innerHTML=`<div class="error">${esc(e.message)}</div>`}
 }
 
@@ -80,13 +80,22 @@ async function fillDashboardFields(){
   $('#dashboard-result').innerHTML='';
 }
 
-function addDashboardFilter(){
+async function applyPortfolioDefault(){
+  if(dataState.sourceId!=='portfolio'||!dataState.schema.columns.some(c=>c.name==='snapshot_kind'))return;
+  addDashboardFilter(false);
+  const row=$('#dash-filters').lastElementChild;
+  row.querySelector('.filter-field').value='snapshot_kind';
+  await loadFilterValues(row);
+  row.querySelector('.filter-value').value='MONTH_END';
+}
+
+function addDashboardFilter(load=true){
   const root=$('#dash-filters');if(root.children.length>=6)return;
   const row=document.createElement('div');row.className='filter-row';
   row.innerHTML=`<select class="control filter-field">${dataState.schema.columns.map(c=>option(c.name,c.name)).join('')}</select><select class="control filter-value"><option value="">Все значения</option></select><button class="secondary-btn" aria-label="Удалить фильтр">×</button>`;
   root.append(row);row.querySelector('button').onclick=()=>row.remove();
   row.querySelector('.filter-field').onchange=()=>loadFilterValues(row);
-  loadFilterValues(row);
+  if(load)loadFilterValues(row);
 }
 
 async function loadFilterValues(row){
@@ -109,6 +118,13 @@ async function runDashboard(){
     const secondary=secondaryField?await api('/dashboard/query',{method:'POST',body:JSON.stringify({...config,dimension:secondaryField,limit:10})}):null;
     const rows=detail.rows;const totalValue=total.rows[0]?.value;
     root.innerHTML=`<div class="dashboard-summary"><div class="hero-kpi"><span>ОСНОВНОЙ ПОКАЗАТЕЛЬ</span><strong>${fmt(totalValue)}</strong><small>${esc(config.aggregation.toUpperCase())} · ${esc(config.metric)}</small></div><div class="hero-kpi accent"><span>ИСТОЧНИК</span><strong>${fmt(dataState.schema.records)}</strong><small>строк · ${esc(dataState.schema.name)}</small></div><div class="hero-kpi"><span>ФИЛЬТРЫ</span><strong>${Object.keys(config.filters).length}</strong><small>${esc(Object.entries(config.filters).map(([k,v])=>k+': '+v).join(', ')||'Все данные')}</small></div></div><div class="dashboard-grid"><div class="section-card chart-panel"><div class="section-title">${esc(config.metric)} ${config.dimension?'по '+esc(config.dimension):''}</div><div class="section-body" id="dashboard-chart"></div></div><div class="section-card"><div class="section-title">Данные графика</div><div class="table-scroll"><table class="data-table"><thead><tr><th>${esc(config.dimension||'Показатель')}</th><th>Значение</th></tr></thead><tbody>${rows.map(r=>`<tr><td>${esc(r.label)}</td><td>${fmt(r.value)}</td></tr>`).join('')}</tbody></table></div></div></div>`;
+    const cards=root.querySelectorAll('.hero-kpi');
+    const isDate=!!config.dimension&&/date|month|period|дата|месяц/i.test(config.dimension);
+    if(isDate&&rows.length){const latest=[...rows].sort((a,b)=>a.label.localeCompare(b.label)).at(-1);cards[0].querySelector('span').textContent='ПОСЛЕДНИЙ ПЕРИОД';cards[0].querySelector('strong').textContent=fmt(latest.value);cards[0].querySelector('small').textContent=latest.label+' · '+config.metric}
+    else cards[0].querySelector('span').textContent='ИТОГО ПО ВЫБРАННЫМ СТРОКАМ';
+    const period=config.date_from||config.date_to?`Период: ${config.date_from||'…'} — ${config.date_to||'…'}`:'';
+    cards[2].querySelector('strong').textContent=Object.keys(config.filters).length+(period?1:0);
+    cards[2].querySelector('small').textContent=[...Object.entries(config.filters).map(([k,v])=>k+': '+v),period].filter(Boolean).join(', ')||'Все данные';
     renderDashboardChart($('#dashboard-chart'),rows,$('#dash-chart').value);
     if(secondary){root.querySelector('.dashboard-grid').insertAdjacentHTML('beforeend',`<div class="section-card chart-panel"><div class="section-title">Структура по ${esc(secondaryField)}</div><div class="section-body" id="dashboard-secondary"></div></div>`);renderDashboardChart($('#dashboard-secondary'),secondary.rows,'donut')}
   }catch(e){root.innerHTML=`<div class="error section-card section-body">${esc(e.message)}</div>`}
@@ -146,7 +162,7 @@ async function refreshSavedDashboards(){
   const items=await api('/dashboards');const root=$('#saved-dashboards');
   root.innerHTML=items.length?`<div class="saved-dashboard-list">${items.map(x=>`<button class="source-choice" data-dashboard="${esc(x.id)}"><b>${esc(x.name)}</b><span>${esc(new Date(x.created_at).toLocaleString('ru-RU'))}</span></button>`).join('')}</div>`:'<div class="empty">Сохранённых дашбордов пока нет.</div>';
   root.querySelectorAll('[data-dashboard]').forEach(b=>b.onclick=async()=>{
-    try{const saved=await api('/dashboards/'+b.dataset.dashboard);dataState.sourceId=saved.config.source_id;$('#dash-source').value=dataState.sourceId;await fillDashboardFields();$('#dash-metric').value=saved.config.metric;$('#dash-aggregation').value=saved.config.aggregation;$('#dash-dimension').value=saved.config.dimension||'';$('#dash-date-field').value=saved.config.date_field||'';$('#dash-date-from').value=saved.config.date_from||'';$('#dash-date-to').value=saved.config.date_to||'';$('#dash-chart').value=saved.chart_type;$('#dash-filters').innerHTML='';for(const [field,value] of Object.entries(saved.config.filters)){addDashboardFilter();const row=$('#dash-filters').lastElementChild;row.querySelector('.filter-field').value=field;await loadFilterValues(row);row.querySelector('.filter-value').value=String(value)}await runDashboard();$('#dashboard-result').scrollIntoView({behavior:'smooth'})}
+    try{const saved=await api('/dashboards/'+b.dataset.dashboard);dataState.sourceId=saved.config.source_id;$('#dash-source').value=dataState.sourceId;await fillDashboardFields();$('#dash-metric').value=saved.config.metric;$('#dash-aggregation').value=saved.config.aggregation;$('#dash-dimension').value=saved.config.dimension||'';$('#dash-date-field').value=saved.config.date_field||'';$('#dash-date-from').value=saved.config.date_from||'';$('#dash-date-to').value=saved.config.date_to||'';$('#dash-chart').value=saved.chart_type;$('#dash-filters').innerHTML='';for(const [field,value] of Object.entries(saved.config.filters)){addDashboardFilter(false);const row=$('#dash-filters').lastElementChild;row.querySelector('.filter-field').value=field;await loadFilterValues(row);row.querySelector('.filter-value').value=String(value)}await runDashboard();$('#dashboard-result').scrollIntoView({behavior:'smooth'})}
     catch(e){alert(e.message)}
   });
 }
