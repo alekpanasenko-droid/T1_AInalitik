@@ -53,6 +53,7 @@ async function renderSourceDetail(){
 
 async function loadDashboard(){
   const root=$('#dashboard-content');root.innerHTML='<div class="loading">Готовим конструктор…</div>';
+  loadSupersetPanel();
   try{
     await refreshSources();
     root.innerHTML=`<div class="section-card"><div class="section-title">Настройки анализа</div><div class="section-body"><div class="dashboard-controls"><label>ИСТОЧНИК<select class="control" id="dash-source">${sourceOptions()}</select></label><label>ПОКАЗАТЕЛЬ<select class="control" id="dash-metric"></select></label><label>ОПЕРАЦИЯ<select class="control" id="dash-aggregation">${option('sum','Сумма')}${option('avg','Среднее')}${option('count','Количество')}${option('min','Минимум')}${option('max','Максимум')}</select></label><label>РАЗРЕЗ<select class="control" id="dash-dimension"></select></label><label>ГРАФИК<select class="control" id="dash-chart">${option('bar','Столбцы')}${option('line','Линия')}${option('donut','Кольцо')}</select></label></div><div class="filter-head"><b>Фильтры</b><button class="secondary-btn" id="add-filter">＋ Добавить фильтр</button></div><div id="dash-filters"></div><div class="dashboard-actions"><button class="primary-btn" id="run-dashboard">Построить дашборд</button><button class="secondary-btn" id="save-dashboard">Сохранить</button></div><div id="dash-feedback"></div></div></div><div id="dashboard-result"></div><div class="section-card"><div class="section-title">Сохранённые дашборды</div><div class="section-body" id="saved-dashboards"></div></div>`;
@@ -64,6 +65,22 @@ async function loadDashboard(){
     $('#save-dashboard').onclick=saveCurrentDashboard;
     await fillDashboardFields();await applyPortfolioDefault();await refreshSavedDashboards();
   }catch(e){root.innerHTML=`<div class="error">${esc(e.message)}</div>`}
+}
+
+async function loadSupersetPanel(){
+  const root=$('#superset-content');
+  try{
+    const info=await api('/superset');
+    root.innerHTML=`<div class="section-card"><div class="section-title">Apache Superset <span class="mini-badge">BI-ПЛАТФОРМА</span></div><div class="section-body"><p class="superset-copy">${info.configured?'Интерактивный BI-дашборд по учебной базе с фильтрами и сохранёнными графиками.':'Запустите Superset через Docker и выполните настройку из README.'}</p><a class="secondary-btn" href="${esc(info.url)}" target="_blank" rel="noopener">Открыть Superset ↗</a>${info.configured?'<div id="superset-mount" class="superset-frame"><div class="loading">Загружаем BI-дашборд…</div></div>':''}</div></div>`;
+    if(info.configured){
+      try{
+        const {embedDashboard}=await import('https://esm.sh/@superset-ui/embedded-sdk@0.4.0');
+        await embedDashboard({id:info.embedded_id,supersetDomain:info.url,mountPoint:$('#superset-mount'),
+          fetchGuestToken:async()=>{const data=await api('/superset/guest-token');return data.token},
+          dashboardUiConfig:{hideTitle:true,filters:{expanded:true}}});
+      }catch(error){$('#superset-mount').innerHTML=`<div class="notice">Встроенный дашборд не загрузился: ${esc(error.message)}. Откройте Superset по ссылке выше.</div>`}
+    }
+  }catch(e){root.innerHTML=`<div class="notice">Superset пока недоступен: ${esc(e.message)}</div>`}
 }
 
 async function fillDashboardFields(){

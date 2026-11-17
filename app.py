@@ -18,8 +18,10 @@ from reportlab.pdfgen.canvas import Canvas
 from agent.agents import Orchestrator
 from agent.llm import configuration
 from agent.store import ROOT, dictionary, initialize, profile, state_connection
+from agent.store import RUNTIME
 from agent.sources import (SourceError, registered, inspect, tables, set_table,
                            add_upload, add_postgres, dashboard_query, filter_values, MAX_UPLOAD)
+from agent.superset_client import guest_token
 
 app = FastAPI(title='Т1 Дата-агент', version='0.1.0')
 
@@ -64,6 +66,22 @@ class SavedDashboardIn(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     config: DashboardIn
     chart_type: str = Field(default='bar', pattern='^(bar|line|donut)$')
+
+
+@app.get('/api/superset')
+def superset_status():
+    config_file = RUNTIME / 'superset.json'
+    config = json.loads(config_file.read_text(encoding='utf-8')) if config_file.exists() else {}
+    return {'url': 'http://127.0.0.1:8088', 'dashboard_id': config.get('dashboard_id'),
+            'embedded_id': config.get('embedded_id'), 'configured': bool(config.get('embedded_id'))}
+
+
+@app.get('/api/superset/guest-token')
+def superset_guest_token():
+    try:
+        return {'token': guest_token()}
+    except (OSError, KeyError, ValueError) as exc:
+        raise HTTPException(503, 'Не удалось получить токен дашборда Superset.') from exc
 
 
 @app.get('/api/sources')

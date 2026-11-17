@@ -11,6 +11,7 @@
   <style>.dash-line-chart{display:block;width:100%;min-height:220px}.chart-panel .section-body{min-height:260px}</style>
   <style>.period-controls{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:18px;max-width:650px}.period-controls label{color:#82949e;font-size:10px;font-weight:800;letter-spacing:.7px}.period-controls .control{margin-top:8px}@media(max-width:650px){.period-controls{grid-template-columns:1fr}}</style>
   <style>.source-stats{grid-template-columns:repeat(4,minmax(0,1fr))}@media(max-width:650px){.source-stats{grid-template-columns:repeat(2,minmax(0,1fr))}}</style>
+  <style>.superset-copy{color:#6b7e89;font-size:12px;line-height:1.6;margin:0 0 15px}.superset-frame{width:100%;height:620px;border:1px solid #dce8ed;border-radius:12px;margin-top:20px;background:#fff}.superset-frame iframe{width:100%;height:100%;border:0;border-radius:12px}</style>
 </head>
 <body>
   <div class="shell">
@@ -36,7 +37,7 @@
         <form id="composer" class="composer"><div class="composer-source"><span>ИСТОЧНИК</span><select id="chat-source" aria-label="Источник данных"><option value="portfolio">Учебный банковский портфель</option></select></div><textarea id="prompt" rows="1" placeholder="Спросите о данных или задайте уточнение…" maxlength="4000" aria-label="Ваш вопрос"></textarea><div class="composer-bottom"><span>Расчёты выполняются SQL по выбранному источнику</span><button type="submit" id="send" aria-label="Отправить">↑</button></div></form>
       </section>
       <section id="view-source" class="view page-view"><div class="page-heading"><div><div class="eyebrow">ИСТОЧНИКИ ДАННЫХ</div><h1>Подключения</h1><p>Добавляйте базы и файлы, выбирайте таблицу и проверяйте её структуру.</p></div></div><div id="source-content"></div></section>
-      <section id="view-dashboard" class="view page-view"><div class="page-heading"><div><div class="eyebrow">АНАЛИТИКА</div><h1>Дашборды</h1><p>Настройте показатели, разрезы и общие фильтры для выбранного источника.</p></div></div><div id="dashboard-content"></div></section>
+      <section id="view-dashboard" class="view page-view"><div class="page-heading"><div><div class="eyebrow">АНАЛИТИКА</div><h1>Дашборды</h1><p>Настройте показатели, разрезы и общие фильтры для выбранного источника.</p></div></div><div id="superset-content"></div><div id="dashboard-content"></div></section>
       <section id="view-dictionary" class="view page-view"><div class="page-heading"><div><div class="eyebrow">СЕМАНТИКА ДАННЫХ</div><h1>Карточка данных</h1><p>Описание полей, единицы измерения и формулы доступны для уточнения.</p></div></div><div id="dictionary-content"></div></section>
       <section id="view-reports" class="view page-view"><div class="page-heading"><div><div class="eyebrow">БИБЛИОТЕКА</div><h1>Сохранённые отчёты</h1><p>Результаты анализа, доступные для повторного просмотра и выгрузки.</p></div></div><div id="reports-content"></div></section>
     </main>

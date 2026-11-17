@@ -1,0 +1,47 @@
+services:
+  portfolio-db:
+    image: postgres:16-alpine
+    ports:
+      - "127.0.0.1:5433:5432"
+    environment:
+      POSTGRES_DB: portfolio
+      POSTGRES_USER: portfolio_admin
+      POSTGRES_PASSWORD: ${PORTFOLIO_DB_PASSWORD}
+    volumes:
+      - portfolio_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U portfolio_admin -d portfolio"]
+      interval: 5s
+      retries: 20
+    restart: unless-stopped
+  superset:
+    build:
+      context: .
+      dockerfile: Dockerfile.superset
+    image: t1-superset:6.0.0
+    ports:
+      - "127.0.0.1:8088:8088"
+    environment:
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY}
+      SUPERSET_ADMIN_USERNAME: ${SUPERSET_ADMIN_USERNAME}
+      SUPERSET_ADMIN_PASSWORD: ${SUPERSET_ADMIN_PASSWORD}
+      SUPERSET_CONFIG_PATH: /app/pythonpath/superset_config.py
+    depends_on:
+      portfolio-db:
+        condition: service_healthy
+    volumes:
+      - superset_home:/app/superset_home
+      - ./.runtime:/app/data:ro
+      - ./superset_config.py:/app/pythonpath/superset_config.py:ro
+    command: >-
+      /bin/sh -c '
+      superset db upgrade &&
+      (superset fab create-admin --username "$$SUPERSET_ADMIN_USERNAME" --firstname T1 --lastname Admin --email admin@localhost --password "$$SUPERSET_ADMIN_PASSWORD" || true) &&
+      superset init &&
+      superset run -h 0.0.0.0 -p 8088
+      '
+    restart: unless-stopped
+
+volumes:
+  superset_home:
+  portfolio_pg:

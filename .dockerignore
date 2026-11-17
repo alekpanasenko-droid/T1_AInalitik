@@ -1,0 +1,10 @@
+.git
+.env
+.env.superset
+.runtime
+data
+static
+agent
+tests
+scripts
+*.db
