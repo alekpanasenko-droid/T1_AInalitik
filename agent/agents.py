@@ -1,8 +1,10 @@
 """Six role-specific agents coordinated by a bounded, inspectable harness."""
 import json
+from math import isfinite
 import re
 import time
 
+from . import portfolio_models
 from .llm import complete_json, LLMError
 from .sql_tool import execute_readonly, SQLRejected
 from .store import dictionary, event, profile
@@ -36,6 +38,9 @@ class BusinessAnalyst:
     def run(self, question, history, source_id='portfolio'):
         if re.search(r'\b(удали|удалить|измени|изменить|перезапиши|обойди|powershell|drop|delete|update)\b', question, re.I):
             return {'status': 'refuse', 'message': 'Изменять исходные данные или обходить разрешённый SQL-инструмент нельзя. Могу выполнить запрос только на чтение.'}, 0
+        model_request = portfolio_models.request(question)
+        if model_request:
+            return model_request, 0
         if (source_id == 'portfolio' and re.search(r'курс', question, re.I) and re.search(r'фиксированн', question, re.I)
                 and re.search(r'\b(USD|EUR)\b', question, re.I) and len(re.findall(r'\b\d{1,2}\b', question)) >= 2
                 and re.search(r'актив|пассив', question, re.I)):
@@ -156,13 +161,18 @@ class BIDeveloper:
 class Tester:
     name = 'Тестировщик'
 
-    def run(self, question, brief, proposal, result, chart, source_id='portfolio'):
+    def run(self, question, brief, proposal, result, chart, source_id='portfolio', model=None):
         if not result['columns']:
             return {'passed': False, 'message': 'Пустая структура результата'}, 0
         if not result['rows']:
             return {'passed': False, 'message': 'Нет строк для заданных условий. Уточните период или фильтры.'}, 0
         if chart and (chart['x'] not in result['columns'] or chart['y'] not in result['columns']):
             return {'passed': False, 'message': 'Поля графика не совпадают с результатом'}, 0
+        if model:
+            numeric = [row[chart['y']] for row in result['rows']]
+            if not all(isfinite(value) for value in numeric):
+                return {'passed': False, 'message': 'Числовой ряд модели содержит некорректные значения.'}, 0
+            return {'passed': True, 'message': 'Срезы, числовой ряд модели и поля графика проверены.'}, 0
         if source_id == 'portfolio' and re.search(r'пассив', question, re.I) and not re.search(r'side\s*=\s*[\'\"]LIABILITY[\'\"]', proposal['sql'], re.I):
             return {'passed': False, 'message': 'Для пассивов отсутствует фильтр side=LIABILITY.'}, 0
         if source_id == 'portfolio' and re.search(r'актив', question, re.I) and not re.search(r'side\s*=\s*[\'\"]ASSET[\'\"]', proposal['sql'], re.I):
@@ -202,7 +212,7 @@ class Orchestrator:
             trace.append({'agent': agent, 'action': action, 'detail': detail})
 
         try:
-            step(self.name, 'План', 'Уточнить задачу → проверить источник → построить SQL → выполнить → визуализировать → проверить')
+            step(self.name, 'План', 'Уточнить задачу → проверить источник → получить данные → рассчитать → визуализировать → проверить')
             brief, n = BusinessAnalyst().run(question, history, source_id)
             tokens += n
             step(BusinessAnalyst.name, 'Уточнение требований', brief)
@@ -213,31 +223,42 @@ class Orchestrator:
             if source['records'] == 0 or any('Ошибок типов' in x for x in source['issues']):
                 return self._finish('error', 'Источник пуст или содержит критичные ошибки типов. Проверьте профиль данных.', trace, started, conversation_id, tokens)
             feedback = ''
+            model = brief.get('model')
+            model_summary = None
             for attempt in range(2):
-                proposal, n = DataAnalyst().run(question, brief['brief'], history, feedback, source_id)
-                tokens += n
+                if model:
+                    proposal = portfolio_models.proposal(model, source_id)
+                else:
+                    proposal, n = DataAnalyst().run(question, brief['brief'], history, feedback, source_id)
+                    tokens += n
                 step(DataAnalyst.name, 'План расчёта', proposal)
                 try:
                     result = execute_readonly(proposal['sql'], source_id=source_id)
                 except SQLRejected as exc:
                     feedback = str(exc)
                     step(DataAnalyst.name, 'Ошибка инструмента', feedback)
-                    if attempt == 0:
+                    if attempt == 0 and not model:
                         continue
                     raise
                 step(DataAnalyst.name, 'SQL-инструмент', {'rows': len(result['rows']), 'duration_ms': result['duration_ms']})
-                chart = BIDeveloper().run(brief.get('title', 'Результат анализа'), brief.get('unit', proposal.get('unit', '')), result)
+                if model:
+                    model_started = time.monotonic()
+                    result, chart, model_summary = portfolio_models.calculate(model, result['rows'])
+                    step(DataAnalyst.name, 'Расчёт модели Python', {
+                        'summary': model_summary, 'duration_ms': round((time.monotonic() - model_started) * 1000, 1)})
+                else:
+                    chart = BIDeveloper().run(brief.get('title', 'Результат анализа'), brief.get('unit', proposal.get('unit', '')), result)
                 step(BIDeveloper.name, 'Визуализация', chart or 'Таблица без графика')
-                check, n = Tester().run(question, brief['brief'], proposal, result, chart, source_id)
+                check, n = Tester().run(question, brief['brief'], proposal, result, chart, source_id, model)
                 tokens += n
                 step(Tester.name, 'Контроль результата', check)
-                if check['passed']:
+                if check['passed'] or model:
                     break
                 feedback = check['message']
             if not check['passed']:
                 return self._finish('error', 'Не удалось проверить расчёт: ' + check['message'], trace, started, conversation_id, tokens)
-            summary = f"Получено {len(result['rows'])} строк по запросу «{brief.get('title', 'анализ данных')}». Значения рассчитаны SQL по учебному источнику."
-            if len(result['rows']) == 1:
+            summary = model_summary or f"Получено {len(result['rows'])} строк по запросу «{brief.get('title', 'анализ данных')}». Значения рассчитаны SQL по учебному источнику."
+            if not model and len(result['rows']) == 1:
                 numeric = [(key, value) for key, value in result['rows'][0].items() if isinstance(value, (int, float))]
                 if numeric:
                     summary += ' ' + '; '.join(f'{key}: {value:,.2f}'.replace(',', ' ') for key, value in numeric[:5]) + '.'
