@@ -34,7 +34,17 @@
       <header class="topbar"><button id="menu-toggle" class="menu-toggle" aria-label="Открыть меню">☰</button><div class="breadcrumb"><span>Т1 Дата-агент</span><span class="slash">/</span><strong id="view-label">Диалог</strong></div><div class="topbar-right"><span class="demo-tag">УЧЕБНЫЙ КОНТУР</span><span class="avatar">Т1</span></div></header>
       <section id="view-chat" class="view chat-view active">
         <div id="messages" class="messages"><div class="welcome"><div class="welcome-logo"><span>+</span>Т1</div><div class="eyebrow">АНАЛИТИКА В ДИАЛОГЕ</div><h1>Что покажут ваши данные?</h1><p>Спросите о динамике, структуре или сравнении банковского портфеля. Агент уточнит задачу, выполнит расчёт и покажет путь к результату.</p><div class="suggestions"><button data-prompt="Покажи помесячную динамику активов в рублях за 2026 год">↗ <span>Динамика активов</span></button><button data-prompt="Покажи структуру пассивов по продуктам на 31 октября 2026 года">◫ <span>Структура пассивов</span></button><button data-prompt="Сравни активы на 30 ноября 2025 и 31 октября 2026 года">⇄ <span>Сравнение периодов</span></button></div></div></div>
-        <form id="composer" class="composer"><div class="composer-source"><span>ИСТОЧНИК</span><select id="chat-source" aria-label="Источник данных"><option value="portfolio">Учебный банковский портфель</option></select></div><textarea id="prompt" rows="1" placeholder="Спросите о данных или задайте уточнение…" maxlength="4000" aria-label="Ваш вопрос"></textarea><div class="composer-bottom"><span>Расчёты выполняются SQL по выбранному источнику</span><button type="submit" id="send" aria-label="Отправить">↑</button></div></form>
+        <form id="composer" class="composer">
+          <div class="composer-tools">
+            <button id="modeling-mode" type="button" class="modeling-mode" aria-pressed="false">Моделирование</button>
+            <div id="composer-source" class="composer-source">
+              <span>ИСТОЧНИК</span><select id="chat-source" aria-label="Источник данных"><option value="portfolio">Учебный банковский портфель</option></select>
+            </div>
+            <button id="modeling-example" class="modeling-example" type="button" hidden>Учебный пример</button>
+          </div>
+          <textarea id="prompt" rows="1" placeholder="Спросите о данных или задайте уточнение…" maxlength="4000" aria-label="Ваш вопрос"></textarea>
+          <div class="composer-bottom"><span id="composer-help" aria-live="polite">Расчёты выполняются SQL по выбранному источнику</span><button type="submit" id="send" aria-label="Отправить">↑</button></div>
+        </form>
       </section>
       <section id="view-source" class="view page-view"><div class="page-heading"><div><div class="eyebrow">ИСТОЧНИКИ ДАННЫХ</div><h1>Подключения</h1><p>Добавляйте базы и файлы, выбирайте таблицу и проверяйте её структуру.</p></div></div><div id="source-content"></div></section>
       <section id="view-dashboard" class="view page-view"><div class="page-heading"><div><div class="eyebrow">АНАЛИТИКА</div><h1>Дашборды</h1><p>Настройте показатели, разрезы и общие фильтры для выбранного источника.</p></div></div><div id="superset-content"></div><div id="dashboard-content"></div></section>

@@ -4,6 +4,7 @@ import json
 import uuid
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, Response
@@ -14,6 +15,7 @@ from reportlab.lib.pagesizes import A4, landscape
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen.canvas import Canvas
+from psycopg import Error as PostgresError
 
 from agent.agents import Orchestrator
 from agent.llm import configuration
@@ -21,7 +23,7 @@ from agent.store import ROOT, dictionary, initialize, profile, state_connection
 from agent.store import RUNTIME
 from agent.sources import (SourceError, registered, inspect, tables, set_table,
                            add_upload, add_postgres, dashboard_query, filter_values, MAX_UPLOAD)
-from agent.superset_client import guest_token
+from agent.superset_client import guest_token, model_guest_token, publish_model_report
 
 app = FastAPI(title='Т1 Дата-агент', version='0.1.0')
 
@@ -33,6 +35,10 @@ def startup():
 
 class MessageIn(BaseModel):
     content: str = Field(min_length=1, max_length=4000)
+
+
+class ModeIn(BaseModel):
+    mode: Literal['analytics', 'modeling']
 
 
 class CardIn(BaseModel):
@@ -219,16 +225,29 @@ def conversations():
 
 
 @app.post('/api/conversations')
-def create_conversation(source_id: str = 'portfolio'):
-    try:
-        inspect(source_id)
-    except SourceError as exc:
-        raise HTTPException(400, str(exc)) from exc
+def create_conversation(source_id: str = 'portfolio', mode: Literal['analytics', 'modeling'] = 'analytics'):
+    if mode == 'analytics':
+        try:
+            inspect(source_id)
+        except SourceError as exc:
+            raise HTTPException(400, str(exc)) from exc
+    else:
+        source_id = 'portfolio'
     ident = str(uuid.uuid4())
     now = datetime.now().isoformat()
     with state_connection() as con:
-        con.execute('INSERT INTO conversations(id,title,created_at,source_id) VALUES(?,?,?,?)', (ident, 'Новый диалог', now, source_id))
-    return {'id': ident, 'title': 'Новый диалог', 'created_at': now, 'source_id': source_id}
+        con.execute('INSERT INTO conversations(id,title,created_at,source_id,mode) VALUES(?,?,?,?,?)',
+                    (ident, 'Новый диалог', now, source_id, mode))
+    return {'id': ident, 'title': 'Новый диалог', 'created_at': now, 'source_id': source_id, 'mode': mode}
+
+
+@app.put('/api/conversations/{ident}/mode')
+def change_mode(ident: str, item: ModeIn):
+    with state_connection() as con:
+        updated = con.execute('UPDATE conversations SET mode=? WHERE id=?', (item.mode, ident))
+        if not updated.rowcount:
+            raise HTTPException(404, 'Диалог не найден.')
+    return {'mode': item.mode}
 
 
 @app.delete('/api/conversations/{ident}')
@@ -248,7 +267,7 @@ def messages(ident: str):
     with state_connection() as con:
         if not con.execute('SELECT 1 FROM conversations WHERE id=?', (ident,)).fetchone():
             raise HTTPException(404, 'Conversation not found')
-        rows = con.execute('SELECT id,role,content,payload,created_at FROM messages WHERE conversation_id=? ORDER BY id', (ident,))
+        rows = con.execute('SELECT id,role,content,payload,created_at,mode FROM messages WHERE conversation_id=? ORDER BY id', (ident,))
         return [{**dict(r), 'payload': json.loads(r['payload']) if r['payload'] else None} for r in rows]
 
 
@@ -256,18 +275,30 @@ def messages(ident: str):
 def post_message(ident: str, item: MessageIn):
     now = datetime.now().isoformat()
     with state_connection() as con:
-        conversation = con.execute('SELECT source_id FROM conversations WHERE id=?', (ident,)).fetchone()
+        conversation = con.execute('SELECT source_id,mode FROM conversations WHERE id=?', (ident,)).fetchone()
         if not conversation:
             raise HTTPException(404, 'Conversation not found')
-        history = [dict(r) for r in con.execute('SELECT role,content FROM messages WHERE conversation_id=? ORDER BY id DESC LIMIT 8', (ident,))][::-1]
-        con.execute('INSERT INTO messages(conversation_id,role,content,created_at) VALUES(?,?,?,?)',
-                    (ident, 'user', item.content, now))
-        if not history:
+        mode = conversation['mode']
+        history = [dict(r) for r in con.execute('''SELECT role,content FROM messages
+                    WHERE conversation_id=? AND mode=? ORDER BY id DESC LIMIT 8''', (ident, mode))][::-1]
+        model_state = None
+        if mode == 'modeling':
+            previous = con.execute("""SELECT json_extract(payload,'$.model_state') FROM messages
+                      WHERE conversation_id=? AND mode='modeling' AND role='assistant'
+                      AND json_type(payload,'$.model_state')='object' ORDER BY id DESC LIMIT 1""", (ident,)).fetchone()
+            if previous:
+                model_state = json.loads(previous[0])
+        is_first = con.execute('SELECT 1 FROM messages WHERE conversation_id=? LIMIT 1', (ident,)).fetchone() is None
+        con.execute('INSERT INTO messages(conversation_id,role,content,created_at,mode) VALUES(?,?,?,?,?)',
+                    (ident, 'user', item.content, now, mode))
+        if is_first:
             con.execute('UPDATE conversations SET title=? WHERE id=?', (item.content[:56], ident))
-    payload = Orchestrator().run(item.content, history, ident, conversation['source_id'])
+    payload = Orchestrator().run(item.content, history, ident, conversation['source_id'],
+                                 mode=mode, model_state=model_state)
     with state_connection() as con:
-        con.execute('INSERT INTO messages(conversation_id,role,content,payload,created_at) VALUES(?,?,?,?,?)',
-                    (ident, 'assistant', payload['message'], json.dumps(payload, ensure_ascii=False), datetime.now().isoformat()))
+        con.execute('INSERT INTO messages(conversation_id,role,content,payload,created_at,mode) VALUES(?,?,?,?,?,?)',
+                    (ident, 'assistant', payload['message'], json.dumps(payload, ensure_ascii=False, allow_nan=False),
+                     datetime.now().isoformat(), mode))
     return payload
 
 
@@ -277,7 +308,7 @@ def reports():
         return [dict(r) for r in con.execute('SELECT id,title,conversation_id,created_at FROM reports ORDER BY created_at DESC')]
 
 
-@app.post('/api/reports/{conversation_id}/{message_id}')
+@app.post('/api/reports/{conversation_id}/{message_id:int}')
 def save_report(conversation_id: str, message_id: int):
     with state_connection() as con:
         row = con.execute('SELECT payload FROM messages WHERE id=? AND conversation_id=? AND role="assistant"',
@@ -287,9 +318,10 @@ def save_report(conversation_id: str, message_id: int):
         payload = json.loads(row['payload'])
         if payload['status'] != 'ok':
             raise HTTPException(400, 'Only completed reports can be saved')
+        payload.pop('model_state', None)
         ident = str(uuid.uuid4())
         con.execute('INSERT INTO reports VALUES(?,?,?,?,?)', (ident, payload['title'], conversation_id,
-                    row['payload'], datetime.now().isoformat()))
+                    json.dumps(payload, ensure_ascii=False), datetime.now().isoformat()))
     return {'id': ident, 'title': payload['title']}
 
 
@@ -310,6 +342,31 @@ def _report(ident):
         return json.loads(row['payload'])
 
 
+def _monthly_model_report(ident):
+    data = _report(ident)
+    if data.get('mode') != 'modeling' or not data.get('bi_monthly'):
+        raise HTTPException(400, 'Superset принимает помесячные отчёты моделирования.')
+    return data
+
+
+@app.post('/api/reports/{ident}/superset')
+def report_superset_publish(ident: str):
+    data = _monthly_model_report(ident)
+    try:
+        return publish_model_report(ident, data)
+    except (OSError, KeyError, ValueError, PostgresError) as exc:
+        raise HTTPException(503, 'Superset недоступен. Запустите Docker и настройте дашборд моделирования.') from exc
+
+
+@app.get('/api/reports/{ident}/superset/guest-token')
+def report_superset_token(ident: str):
+    _monthly_model_report(ident)
+    try:
+        return {'token': model_guest_token(ident)}
+    except (OSError, KeyError, ValueError) as exc:
+        raise HTTPException(503, 'Не удалось открыть дашборд моделирования в Superset.') from exc
+
+
 @app.get('/api/reports/{ident}/export/{format}')
 def export(ident: str, format: str):
     data = _report(ident)
@@ -323,14 +380,21 @@ def export(ident: str, format: str):
                         headers={'Content-Disposition': 'attachment; filename="report.csv"'})
     if format == 'xlsx':
         wb = Workbook()
-        ws = wb.active
-        ws.title = 'Отчёт'
-        ws.append(columns)
-        for row in rows:
-            ws.append([row.get(c) for c in columns])
-        ws.freeze_panes = 'A2'
-        for col in ws.columns:
-            ws.column_dimensions[col[0].column_letter].width = min(38, max(14, max(len(str(cell.value or '')) for cell in list(col)[:50]) + 2))
+
+        def write_sheet(ws, headings, values):
+            ws.append(headings)
+            for row in values:
+                ws.append([row.get(c) for c in headings])
+            ws.freeze_panes = 'A2'
+            for col in ws.columns:
+                ws.column_dimensions[col[0].column_letter].width = min(38, max(14, max(len(str(cell.value or '')) for cell in col[:50]) + 2))
+
+        wb.active.title = 'Отчёт'
+        write_sheet(wb.active, columns, rows)
+        if measures := data.get('metrics'):
+            summary = wb.create_sheet('Итоги сценариев', index=0)
+            write_sheet(summary, measures['columns'], measures['rows'])
+            wb.active = 0
         buf = io.BytesIO()
         wb.save(buf)
         return Response(buf.getvalue(), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -368,6 +432,9 @@ def export(ident: str, format: str):
         if chart and rows:
             pdf.showPage()
             page_header()
+        if chart and rows and chart.get('series'):
+            _pdf_scenario_chart(pdf, font, width, chart, rows, data['unit'])
+        elif chart and rows:
             values = [(str(r.get(chart['x'], '')), r.get(chart['y'])) for r in rows[:20]]
             values = [(label, value) for label, value in values if isinstance(value, (int, float))]
             if values:
@@ -389,3 +456,41 @@ def export(ident: str, format: str):
         return Response(buf.getvalue(), media_type='application/pdf',
                         headers={'Content-Disposition': 'attachment; filename="report.pdf"'})
     raise HTTPException(404, 'Unknown format')
+
+
+def _pdf_scenario_chart(pdf, font, width, chart, rows, unit):
+    series = {}
+    for row in rows:
+        series.setdefault(row[chart['series']], []).append((row[chart['x']], row[chart['y']]))
+    values = [value for items in series.values() for _, value in items]
+    low, high = min(0, *values), max(0, *values)
+    months = max(1, *(month for items in series.values() for month, _ in items))
+    left, right = 116, width - 38
+    y = lambda value: 140 + 300 * (value - low) / (high - low or 1)
+    x = lambda month: left + (right - left) * month / months
+    pdf.setFont(font, 9)
+    pdf.drawString(left, 465, f'Остаток денег, {unit}')
+    for i in range(5):
+        value = low + (high - low) * i / 4
+        pdf.setStrokeColor(colors.HexColor('#dbe8ed'))
+        pdf.line(left, y(value), right, y(value))
+        pdf.drawRightString(left - 8, y(value) - 3, f'{value:,.0f}'.replace(',', ' '))
+        if low == high:
+            break
+    pdf.setStrokeColor(colors.HexColor('#7e939e'))
+    pdf.line(left, y(0), right, y(0))
+    for month in range(0, months + 1, max(1, (months + 9) // 10)):
+        pdf.drawCentredString(x(month), 123, str(month))
+    pdf.drawCentredString((left + right) / 2, 104, 'Месяц')
+    palette = ('#0089b8', '#a24172', '#237a61', '#7750a7', '#9b531d', '#3964a3', '#67544e', '#65731e', '#436268')
+    for index, (name, points) in enumerate(series.items()):
+        pdf.setStrokeColor(colors.HexColor(palette[index % len(palette)]))
+        pdf.setLineWidth(2)
+        path = pdf.beginPath()
+        for point_index, (month, value) in enumerate(points):
+            (path.moveTo if point_index == 0 else path.lineTo)(x(month), y(value))
+        pdf.drawPath(path)
+        label_x = left + (index % 3) * (right - left) / 3
+        label_y = 83 - index // 3 * 15
+        pdf.line(label_x, label_y + 3, label_x + 11, label_y + 3)
+        pdf.drawString(label_x + 16, label_y, name[:35])

@@ -1,6 +1,7 @@
 import json
 import os
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -26,12 +27,17 @@ DESCRIPTIONS = {
 }
 
 
+@contextmanager
 def state_connection():
     RUNTIME.mkdir(exist_ok=True)
     con = sqlite3.connect(STATE_DB)
     con.row_factory = sqlite3.Row
-    con.execute('PRAGMA foreign_keys=ON')
-    return con
+    try:
+        con.execute('PRAGMA foreign_keys=ON')
+        with con:
+            yield con
+    finally:
+        con.close()
 
 
 def initialize():
@@ -57,6 +63,10 @@ def initialize():
         columns = [row[1] for row in con.execute('PRAGMA table_info(conversations)')]
         if 'source_id' not in columns:
             con.execute("ALTER TABLE conversations ADD COLUMN source_id TEXT NOT NULL DEFAULT 'portfolio'")
+        if 'mode' not in columns:
+            con.execute("ALTER TABLE conversations ADD COLUMN mode TEXT NOT NULL DEFAULT 'analytics'")
+        if 'mode' not in [row[1] for row in con.execute('PRAGMA table_info(messages)')]:
+            con.execute("ALTER TABLE messages ADD COLUMN mode TEXT NOT NULL DEFAULT 'analytics'")
         for field, (description, unit, formula) in DESCRIPTIONS.items():
             con.execute('INSERT OR IGNORE INTO dictionary VALUES(?,?,?,?)', (field, description, unit, formula))
     if not DATA_DB.exists() or DATA_DB.stat().st_mtime < SOURCE.stat().st_mtime:

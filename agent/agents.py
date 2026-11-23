@@ -4,7 +4,7 @@ from math import isfinite
 import re
 import time
 
-from . import portfolio_models
+from . import portfolio_models, project_dialog
 from .llm import complete_json, LLMError
 from .sql_tool import execute_readonly, SQLRejected
 from .store import dictionary, event, profile
@@ -201,7 +201,8 @@ class Orchestrator:
     name = 'Оркестратор'
     max_steps = 12
 
-    def run(self, question, history, conversation_id, source_id='portfolio'):
+    def run(self, question, history, conversation_id, source_id='portfolio', *,
+            mode='analytics', model_state=None):
         started = time.monotonic()
         trace = []
         tokens = 0
@@ -212,6 +213,11 @@ class Orchestrator:
             trace.append({'agent': agent, 'action': action, 'detail': detail})
 
         try:
+            if mode == 'modeling':
+                step(self.name, 'План моделирования', 'Собрать вводные → проверить → рассчитать → показать результат')
+                payload, tokens = project_dialog.run(question, history, model_state or {}, step)
+                finished = self._finish(payload['status'], payload['message'], trace, started, conversation_id, tokens)
+                return {**payload, **finished, 'mode': mode}
             step(self.name, 'План', 'Уточнить задачу → проверить источник → получить данные → рассчитать → визуализировать → проверить')
             brief, n = BusinessAnalyst().run(question, history, source_id)
             tokens += n
