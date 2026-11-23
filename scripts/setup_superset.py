@@ -68,19 +68,50 @@ def main():
         'dashboard_title': 'Т1 · Банковский портфель', 'published': True,
     })
     charts = []
+    balance_metric = {'expressionType': 'SIMPLE', 'column': {'column_name': 'balance_rub'},
+                      'aggregate': 'SUM', 'label': 'Остаток, ₽'}
+    def field_filter(field, value):
+        return {'expressionType': 'SIMPLE', 'subject': field, 'operator': '==',
+                'comparator': value, 'clause': 'WHERE'}
+
     definitions = [
         ('Динамика активов и пассивов', 'echarts_timeseries_line', {
             'viz_type': 'echarts_timeseries_line', 'datasource': f'{dataset_id}__table',
-            'x_axis': 'as_of_date', 'metrics': [{'expressionType': 'SIMPLE', 'column': {'column_name': 'balance_rub'}, 'aggregate': 'SUM', 'label': 'Остаток, ₽'}],
+            'x_axis': 'as_of_date', 'metrics': [balance_metric],
             'groupby': ['side'], 'time_range': 'No filter', 'granularity_sqla': 'as_of_date',
-            'adhoc_filters': [{'expressionType': 'SIMPLE', 'subject': 'snapshot_kind', 'operator': '==', 'comparator': 'MONTH_END', 'clause': 'WHERE'}],
+            'adhoc_filters': [field_filter('snapshot_kind', 'MONTH_END')],
             'row_limit': 100, 'show_legend': True,
         }),
         ('Структура портфеля по продуктам', 'echarts_timeseries_bar', {
             'viz_type': 'echarts_timeseries_bar', 'datasource': f'{dataset_id}__table',
-            'x_axis': 'product', 'metrics': [{'expressionType': 'SIMPLE', 'column': {'column_name': 'balance_rub'}, 'aggregate': 'SUM', 'label': 'Остаток, ₽'}],
-            'adhoc_filters': [{'expressionType': 'SIMPLE', 'subject': 'as_of_date', 'operator': '==', 'comparator': '2026-10-31', 'clause': 'WHERE'}],
+            'x_axis': 'product', 'metrics': [balance_metric],
+            'adhoc_filters': [field_filter('as_of_date', '2026-10-31')],
             'row_limit': 30, 'show_legend': False,
+        }),
+        ('Активы по валютам · 31.10.2026', 'pie', {
+            'viz_type': 'pie', 'datasource': f'{dataset_id}__table',
+            'groupby': ['currency'], 'metric': balance_metric,
+            'adhoc_filters': [field_filter('as_of_date', '2026-10-31'), field_filter('side', 'ASSET')],
+            'row_limit': 10, 'show_legend': True, 'show_labels': True,
+        }),
+        ('Пассивы по продуктам · 31.10.2026', 'echarts_timeseries_bar', {
+            'viz_type': 'echarts_timeseries_bar', 'datasource': f'{dataset_id}__table',
+            'x_axis': 'product', 'metrics': [balance_metric],
+            'adhoc_filters': [field_filter('as_of_date', '2026-10-31'), field_filter('side', 'LIABILITY')],
+            'row_limit': 20, 'show_legend': False,
+        }),
+        ('Активы по срокам · 31.10.2026', 'echarts_timeseries_bar', {
+            'viz_type': 'echarts_timeseries_bar', 'datasource': f'{dataset_id}__table',
+            'x_axis': 'maturity_bucket', 'metrics': [balance_metric],
+            'adhoc_filters': [field_filter('as_of_date', '2026-10-31'), field_filter('side', 'ASSET')],
+            'row_limit': 20, 'show_legend': False,
+        }),
+        ('Динамика активов по валютам', 'echarts_timeseries_line', {
+            'viz_type': 'echarts_timeseries_line', 'datasource': f'{dataset_id}__table',
+            'x_axis': 'as_of_date', 'metrics': [balance_metric], 'groupby': ['currency'],
+            'time_range': 'No filter', 'granularity_sqla': 'as_of_date',
+            'adhoc_filters': [field_filter('snapshot_kind', 'MONTH_END'), field_filter('side', 'ASSET')],
+            'row_limit': 100, 'show_legend': True,
         }),
     ]
     for title, viz_type, params in definitions:
@@ -92,18 +123,21 @@ def main():
         chart_id = find_or_create('/api/v1/chart/', 'slice_name', title, chart_body)
         call('PUT', f'/api/v1/chart/{chart_id}', chart_body)
         charts.append((chart_id, title))
-    row_id = 'ROW-T1'
     chart_keys = [f'CHART-T1-{i}' for i in range(len(charts))]
+    row_ids = [f'ROW-T1-{i}' for i in range((len(charts) + 1) // 2)]
     layout = {
         'DASHBOARD_VERSION_KEY': 'v2',
         'ROOT_ID': {'id': 'ROOT_ID', 'type': 'ROOT', 'children': ['GRID_ID']},
-        'GRID_ID': {'id': 'GRID_ID', 'type': 'GRID', 'children': [row_id], 'parents': ['ROOT_ID']},
-        row_id: {'id': row_id, 'type': 'ROW', 'children': chart_keys, 'parents': ['ROOT_ID', 'GRID_ID'], 'meta': {'background': 'BACKGROUND_TRANSPARENT'}},
+        'GRID_ID': {'id': 'GRID_ID', 'type': 'GRID', 'children': row_ids, 'parents': ['ROOT_ID']},
     }
+    for row_index, row_id in enumerate(row_ids):
+        layout[row_id] = {'id': row_id, 'type': 'ROW', 'children': chart_keys[row_index * 2:row_index * 2 + 2],
+                          'parents': ['ROOT_ID', 'GRID_ID'], 'meta': {'background': 'BACKGROUND_TRANSPARENT'}}
     for i, (chart_id, title) in enumerate(charts):
+        row_id = row_ids[i // 2]
         layout[chart_keys[i]] = {'id': chart_keys[i], 'type': 'CHART', 'children': [],
                                  'parents': ['ROOT_ID', 'GRID_ID', row_id],
-                                 'meta': {'chartId': chart_id, 'width': 6, 'height': 50, 'sliceName': title}}
+                                 'meta': {'chartId': chart_id, 'width': 6, 'height': 35, 'sliceName': title}}
     native_filters = []
     for field, label in [('side', 'Активы / пассивы'), ('currency', 'Валюта')]:
         native_filters.append({
